@@ -63,3 +63,5 @@ AutoWarehouse/Content.tar.gz
 AutoWarehouse/Content.*
 Frontend/node_modules/
 Backend/data/*.json
+COLLISION_AVOIDANCE.md
+ADVANCED_FEATURES_GUIDE.md

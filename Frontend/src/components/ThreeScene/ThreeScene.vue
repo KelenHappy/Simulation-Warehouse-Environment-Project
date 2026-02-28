@@ -48,11 +48,21 @@ const {
     routeStatus,
     isExecuting,
     executionStatus,
+    carStatuses,
+    collisionMode,
+    activeTasks,
+    systemStatus,
+    carPriorities,
     setCarDestination,
     pickUpCargo,
     dropCargo,
     executeOrders,
     resetWarehouse,
+    switchCollisionMode,
+    setCarPriority,
+    createCollaborativeTask,
+    executeCollaborativeTask,
+    cancelCollaborativeTask,
 } = useThreeScene({
     container,
     moveSpeed,
@@ -110,6 +120,26 @@ const handleDropCargo = () => {
     dropCargo(selectedCar.value);
 };
 
+const handleSwitchMode = (mode) => {
+    switchCollisionMode(mode);
+};
+
+const handleSetPriority = (carId, priority) => {
+    setCarPriority(carId, priority);
+};
+
+const handleCreateTask = (taskData) => {
+    createCollaborativeTask(taskData);
+};
+
+const handleExecuteTask = (taskId) => {
+    executeCollaborativeTask(taskId);
+};
+
+const handleCancelTask = (taskId) => {
+    cancelCollaborativeTask(taskId);
+};
+
 onMounted(() => {
     if (container.value) {
         init();
@@ -129,6 +159,19 @@ defineExpose({
     isExecuting,
     executionStatus,
     resetWarehouse,
+    carStatuses,
+    collisionMode,
+    carOptions,
+    destinationXOptions,
+    destinationYOptions,
+    activeTasks,
+    systemStatus,
+    carPriorities,
+    switchCollisionMode,
+    setCarPriority,
+    createCollaborativeTask,
+    executeCollaborativeTask,
+    cancelCollaborativeTask,
 });
 </script>
 

@@ -29,6 +29,18 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
     const routeStatus = ref("選擇車輛與目的地後派送");
     const isExecuting = ref(false);
     const executionStatus = ref("");
+    const carStatuses = ref([]); // ⭐ 新增：車輛狀態
+    const collisionMode = ref('advanced'); // ⭐ 避障模式
+    const activeTasks = ref([]); // ⭐ 協作任務
+    const systemStatus = ref({
+        collisionMode: 'advanced',
+        totalCars: 0,
+        activeTasks: 0,
+        waitingCars: 0,
+        movingCars: 0,
+        idleCars: 0
+    });
+    const carPriorities = ref({}); // ⭐ 車輛優先級
 
     const unloadBaysConfig = unloadBays;
 
@@ -557,7 +569,20 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
 
         const delta = clock.getDelta();
         updatePlayer(delta);
-        if (carManager) carManager.update(delta);
+        if (carManager) {
+            carManager.update(delta);
+            // ⭐ 更新車輛狀態
+            carStatuses.value = carManager.getAllCarStatus();
+            systemStatus.value = carManager.getSystemStatus();
+            activeTasks.value = carManager.getAllCollaborativeTasks();
+            
+            // 更新優先級顯示
+            const priorities = {};
+            carManager.cars.forEach(car => {
+                priorities[car.id] = carManager.carPriorities.get(car.id) || 0;
+            });
+            carPriorities.value = priorities;
+        }
         updateCamera();
 
         renderer.render(scene, camera);
@@ -631,6 +656,54 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
         }
     }
 
+    // ⭐ 切換避障模式
+    function switchCollisionMode(mode) {
+        if (carManager) {
+            carManager.setCollisionMode(mode);
+            collisionMode.value = mode;
+            routeStatus.value = `避障模式已切換至: ${mode === 'simple' ? '簡單避讓' : '完整系統'}`;
+        }
+    }
+
+    // ⭐ 設置車輛優先級
+    function setCarPriority(carId, priority) {
+        if (carManager) {
+            carManager.setCarPriority(carId, priority);
+            const priorities = {};
+            carManager.cars.forEach(car => {
+                priorities[car.id] = carManager.carPriorities.get(car.id) || 0;
+            });
+            carPriorities.value = priorities;
+        }
+    }
+
+    // ⭐ 創建協作任務
+    function createCollaborativeTask(taskData) {
+        if (!carManager) return { success: false, message: '車輛管理器未初始化' };
+        const result = carManager.createCollaborativeTask(
+            taskData.carIds,
+            taskData.targetCoord,
+            taskData.taskType
+        );
+        routeStatus.value = result.message;
+        return result;
+    }
+
+    // ⭐ 執行協作任務
+    function executeCollaborativeTask(taskId) {
+        if (!carManager) return { success: false, message: '車輛管理器未初始化' };
+        const result = carManager.executeCollaborativeTask(taskId);
+        routeStatus.value = result.message;
+        return result;
+    }
+
+    // ⭐ 取消協作任務
+    function cancelCollaborativeTask(taskId) {
+        if (!carManager) return;
+        carManager.cancelCollaborativeTask(taskId);
+        routeStatus.value = `協作任務 ${taskId} 已取消`;
+    }
+
     return {
         init,
         cleanup,
@@ -640,10 +713,20 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
         routeStatus,
         isExecuting,
         executionStatus,
+        carStatuses, // ⭐ 車輛狀態
+        collisionMode, // ⭐ 避障模式
+        activeTasks, // ⭐ 協作任務
+        systemStatus, // ⭐ 系統狀態
+        carPriorities, // ⭐ 車輛優先級
         setCarDestination,
         pickUpCargo,
         dropCargo,
         executeOrders,
         resetWarehouse,
+        switchCollisionMode, // ⭐ 切換避障模式
+        setCarPriority, // ⭐ 設置優先級
+        createCollaborativeTask, // ⭐ 創建協作任務
+        executeCollaborativeTask, // ⭐ 執行協作任務
+        cancelCollaborativeTask, // ⭐ 取消協作任務
     };
 }
