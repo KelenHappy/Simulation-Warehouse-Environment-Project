@@ -213,32 +213,58 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
         });
     }
 
-    function getNearbyStagingCoords(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
-        if (!gridMetricsCache) return [];
-        const { width, depth } = gridMetricsCache;
-        const offsets = [
-            { x: 1, z: 0 },
-            { x: -1, z: 0 },
-            { x: 0, z: 1 },
-            { x: 0, z: -1 },
-            { x: 1, z: 1 },
-            { x: 1, z: -1 },
-            { x: -1, z: 1 },
-            { x: -1, z: -1 },
-        ];
+    function isValidStagingCoord(coord, centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!coord) return false;
+        if (coord.x === centerCoord.x && coord.z === centerCoord.z) return false;
+        if (isUnloadAreaCoord(coord)) return false;
+        if (isOtherCarPendingStackCoord(coord, activeCarId, itemAssignments, deliveredItemIds)) return false;
+        return true;
+    }
 
-        return offsets
-            .map((offset) => ({
-                x: Math.max(0, Math.min(width - 1, centerCoord.x + offset.x)),
-                z: Math.max(0, Math.min(depth - 1, centerCoord.z + offset.z)),
-            }))
-            .filter((coord) => coord.x !== centerCoord.x || coord.z !== centerCoord.z)
-            .filter((coord) => !isUnloadAreaCoord(coord))
-            .filter((coord) => !isOtherCarPendingStackCoord(coord, activeCarId, itemAssignments, deliveredItemIds));
+    function getNearbyStagingCoords(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        return getStagingCoordsByRadius(centerCoord, 1, activeCarId, itemAssignments, deliveredItemIds);
+    }
+
+    function getStagingCoordsByRadius(centerCoord, radius, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!gridMetricsCache || radius < 1) return [];
+
+        const { width, depth } = gridMetricsCache;
+        const candidates = [];
+
+        for (let z = centerCoord.z - radius; z <= centerCoord.z + radius; z++) {
+            for (let x = centerCoord.x - radius; x <= centerCoord.x + radius; x++) {
+                if (x < 0 || x >= width || z < 0 || z >= depth) continue;
+                const distance = Math.max(Math.abs(x - centerCoord.x), Math.abs(z - centerCoord.z));
+                if (distance !== radius) continue;
+
+                const coord = { x, z };
+                if (isValidStagingCoord(coord, centerCoord, activeCarId, itemAssignments, deliveredItemIds)) {
+                    candidates.push(coord);
+                }
+            }
+        }
+
+        return candidates;
+    }
+
+    function getStagingCoordsByPriority(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!gridMetricsCache) return [];
+
+        const { width, depth } = gridMetricsCache;
+        const maxRadius = Math.max(width, depth);
+        const stagingCoords = [];
+
+        for (let radius = 1; radius <= maxRadius; radius++) {
+            stagingCoords.push(
+                ...getStagingCoordsByRadius(centerCoord, radius, activeCarId, itemAssignments, deliveredItemIds)
+            );
+        }
+
+        return stagingCoords;
     }
 
     function getNextAvailableStagingCoord(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
-        const stagingCoords = getNearbyStagingCoords(centerCoord, activeCarId, itemAssignments, deliveredItemIds);
+        const stagingCoords = getStagingCoordsByPriority(centerCoord, activeCarId, itemAssignments, deliveredItemIds);
         if (!gridMetricsCache || stagingCoords.length === 0) {
             return null;
         }
@@ -282,7 +308,7 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
                 const stagingCoord = getNextAvailableStagingCoord(targetCoord, carId, itemAssignments, deliveredItemIds);
                 const stagingCoords = [
                     stagingCoord,
-                    ...getNearbyStagingCoords(targetCoord, carId, itemAssignments, deliveredItemIds),
+                    ...getStagingCoordsByPriority(targetCoord, carId, itemAssignments, deliveredItemIds),
                 ].filter(Boolean);
                 await moveCargoBoxToCoords(carId, blockingBox, stagingCoords);
             }
