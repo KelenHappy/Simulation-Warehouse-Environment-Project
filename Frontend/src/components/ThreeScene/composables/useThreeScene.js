@@ -145,9 +145,33 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
     const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const pickDropDelay = 650;
 
-    async function moveCargoBoxToCoord(carId, cargoBox, targetCoord) {
+    async function dropCargoWithFallback(carId, primaryCoord, itemAssignments, deliveredItemIds) {
+        const dropped = dropCargo(carId);
+        await pause(pickDropDelay);
+        if (dropped) return true;
+
+        const fallbackCoords = getStagingCoordsByPriority(primaryCoord, carId, itemAssignments, deliveredItemIds);
+        for (const coord of fallbackCoords) {
+            const moved = setCarDestination(carId, `${coord.x}-${coord.z}`);
+            if (!moved) continue;
+
+            await waitForCarReady(carId);
+            await pause(pickDropDelay);
+
+            const retryDrop = dropCargo(carId);
+            await pause(pickDropDelay);
+            if (retryDrop) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    async function moveCargoBoxToCoord(carId, cargoBox, targetCoord, options = {}) {
         if (!carManager || !cargoBox?.userData?.gridCoord) return false;
 
+        const { itemAssignments, deliveredItemIds } = options;
         const { x, z } = cargoBox.userData.gridCoord;
         const moveResult = setCarDestination(carId, `${x}-${z}`);
         if (!moveResult) return false;
@@ -160,20 +184,19 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
 
         await pause(pickDropDelay);
 
-        setCarDestination(carId, `${targetCoord.x}-${targetCoord.z}`);
+        const moveToTarget = setCarDestination(carId, `${targetCoord.x}-${targetCoord.z}`);
+        if (!moveToTarget) return false;
+
         await waitForCarReady(carId);
         await pause(pickDropDelay);
 
-        const dropResult = dropCargo(carId);
-        await pause(pickDropDelay);
-
-        return dropResult;
+        return dropCargoWithFallback(carId, targetCoord, itemAssignments, deliveredItemIds);
     }
 
-    async function moveCargoBoxToCoords(carId, cargoBox, targetCoords = []) {
+    async function moveCargoBoxToCoords(carId, cargoBox, targetCoords = [], options = {}) {
         const coords = targetCoords.filter(Boolean);
         for (const coord of coords) {
-            const moved = await moveCargoBoxToCoord(carId, cargoBox, coord);
+            const moved = await moveCargoBoxToCoord(carId, cargoBox, coord, options);
             if (moved) {
                 return true;
             }
@@ -294,14 +317,14 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
                 const assignment = itemAssignments?.get(blockingId);
                 const shippingCoord = assignment?.shippingTarget?.coord;
                 if (shippingCoord) {
-                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord]);
+                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord], { itemAssignments, deliveredItemIds });
                     deliveredItemIds?.add(blockingId);
                 }
             } else if (itemAssignments?.has(blockingId)) {
                 const assignment = itemAssignments.get(blockingId);
                 const shippingCoord = assignment?.shippingTarget?.coord;
                 if (shippingCoord) {
-                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord]);
+                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord], { itemAssignments, deliveredItemIds });
                     deliveredItemIds?.add(blockingId);
                 }
             } else {
@@ -310,7 +333,7 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
                     stagingCoord,
                     ...getStagingCoordsByPriority(targetCoord, carId, itemAssignments, deliveredItemIds),
                 ].filter(Boolean);
-                await moveCargoBoxToCoords(carId, blockingBox, stagingCoords);
+                await moveCargoBoxToCoords(carId, blockingBox, stagingCoords, { itemAssignments, deliveredItemIds });
             }
 
             stack = getStackAtCoord(targetCoord);
@@ -350,7 +373,7 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
             }
 
             await clearBlockingCargo(carId, cargoBox, orderItemIds, itemAssignments, deliveredItemIds);
-            const moveResult = await moveCargoBoxToCoords(carId, cargoBox, [shippingTarget.coord]);
+            const moveResult = await moveCargoBoxToCoords(carId, cargoBox, [shippingTarget.coord], { itemAssignments, deliveredItemIds });
             if (!moveResult) {
                 executionStatus.value = `商品 ${itemId} 卸貨失敗`;
                 continue;
