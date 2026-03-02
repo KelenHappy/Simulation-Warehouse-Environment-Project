@@ -1019,174 +1019,57 @@ export class CarManager {
     }
 
     /**
-     * ⭐ 簡單避讓模式更新
+     * ⭐ 統一車輛移動處理（所有移動問題集中）
      */
-    updateSimpleMode(delta) {
-        this.cars.forEach(carData => {
-            const { model, path } = carData;
+    processCarMovement(carData, delta, mode = 'advanced') {
+        const { model, path } = carData;
+        model.rotation.y = this.unloadFacingRotation;
 
-            // 車輛保持面向卸貨區，不隨路徑轉向
-            model.rotation.y = this.unloadFacingRotation;
+        if (path.length === 0) {
+            carData.isWaiting = false;
+            carData.waitTicks = 0;
+            carData.blockedBy = null;
+            return;
+        }
 
-            if (path.length === 0) {
-                carData.isWaiting = false;
-                carData.waitTicks = 0;
-                carData.blockedBy = null;
-                return;
-            }
-
-            // 計算移動距離
-            const moveDistance = this.carSpeed * delta;
-            let remainingDistance = moveDistance;
-
-            while (remainingDistance > 0 && path.length > 0) {
-                const currentPos = model.position;
-                const targetPoint = path[carData.pathIndex];
-                if (!targetPoint?.coord || !targetPoint?.position) {
-                    console.error(`❌ ${carData.name} 路徑資料異常，可能在碰撞讓路時產生無效節點`, {
-                        pathIndex: carData.pathIndex,
-                        pathLength: path.length,
-                        targetPoint,
-                    });
-                    carData.path = [];
-                    carData.pathIndex = 0;
-                    carData.isWaiting = false;
-                    carData.waitTicks = 0;
-                    carData.blockedBy = null;
-                    carData.waitReason = null;
-                    this.releasePathReservation(carData.id);
-                    break;
-                }
-
-                // ⭐ 簡單模式：只檢查碰撞，不重新規劃（車輛占 2 格）
-                const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
-                const occupier = nextCells
-                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id, false))
-                    .find(Boolean);
-
-                if (occupier && occupier !== carData.id) {
-                    const occupierCar = this.getCarById(occupier);
-                    const shouldYield = this.shouldCurrentCarYield(carData, occupierCar);
-
-                    if (!shouldYield && occupierCar && occupierCar.path.length === 0 && !occupierCar.hasCargoTask) {
-                        console.log(`🚦 ${carData.name} 優先級較高，請求 ${occupierCar.name} 讓路`);
-                        this.moveCarToSafePosition(occupierCar);
-                        break;
-                    }
-
-                    if (!carData.isWaiting) {
-                        carData.isWaiting = true;
-                        carData.waitStartTime = Date.now();
-                        carData.waitTicks = 1;
-                        console.log(`🚗 ${carData.name} 等待中... (簡單模式)`);
-                    } else {
-                        carData.waitTicks += 1;
-                    }
-                    break; // 停止移動，等待
-                }
-
-                // 恢復移動
-                if (carData.isWaiting) {
-                    carData.isWaiting = false;
-                    carData.waitTicks = 0;
-                    console.log(`✅ ${carData.name} 繼續移動`);
-                }
-
-                const direction = new THREE.Vector3()
-                    .subVectors(targetPoint.position, currentPos);
-                const distanceToTarget = direction.length();
-
-                if (distanceToTarget <= remainingDistance) {
-                    model.position.copy(targetPoint.position);
-                    carData.currentCoord = { ...targetPoint.coord };
-                    remainingDistance -= distanceToTarget;
-
-                    if (carData.pathIndex < path.length - 1) {
-                        carData.pathIndex += 1;
-                    } else {
-                        remainingDistance = 0;
-                    }
-                } else {
-                    direction.normalize();
-                    model.position.addScaledVector(direction, remainingDistance);
-                    remainingDistance = 0;
-                }
-            }
-
-            const reachedEnd = path.length > 0 &&
-                carData.pathIndex === path.length - 1 &&
-                model.position.distanceTo(path[path.length - 1].position) < 0.001;
-
-            if (reachedEnd) {
+        let remainingDistance = this.carSpeed * delta;
+        while (remainingDistance > 0 && path.length > 0) {
+            const currentPos = model.position;
+            const targetPoint = path[carData.pathIndex];
+            if (!targetPoint?.coord || !targetPoint?.position) {
+                console.error(`❌ ${carData.name} 路徑資料異常，可能在碰撞讓路時產生無效節點`, {
+                    pathIndex: carData.pathIndex,
+                    pathLength: path.length,
+                    targetPoint,
+                });
                 carData.path = [];
                 carData.pathIndex = 0;
-                carData.targetCoord = null;
-                carData.heading = this.unloadFacingDirection.clone();
                 carData.isWaiting = false;
                 carData.waitTicks = 0;
                 carData.blockedBy = null;
                 carData.waitReason = null;
-
-                // 釋放路徑預約
                 this.releasePathReservation(carData.id);
-                
-                console.log(`🎯 ${carData.name} 已到達目的地`);
-            }
-        });
-    }
-
-    /**
-     * ⭐ 完整避障模式更新
-     */
-    updateAdvancedMode(delta) {
-        // 定期檢測死鎖
-        this.detectAndResolveDeadlock();
-
-        this.cars.forEach(carData => {
-            const { model, path } = carData;
-
-            // 車輛保持面向卸貨區，不隨路徑轉向
-            model.rotation.y = this.unloadFacingRotation;
-
-            if (path.length === 0) {
-                carData.isWaiting = false;
-                carData.waitTicks = 0;
-                carData.blockedBy = null;
-                return;
+                break;
             }
 
-            // 計算移動距離
-            const moveDistance = this.carSpeed * delta;
-            let remainingDistance = moveDistance;
+            const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
+            const occupier = nextCells
+                .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id, false))
+                .find(Boolean);
 
-            while (remainingDistance > 0 && path.length > 0) {
-                const currentPos = model.position;
-                const targetPoint = path[carData.pathIndex];
-                if (!targetPoint?.coord || !targetPoint?.position) {
-                    console.error(`❌ ${carData.name} 路徑資料異常，可能在碰撞讓路時產生無效節點`, {
-                        pathIndex: carData.pathIndex,
-                        pathLength: path.length,
-                        targetPoint,
-                    });
-                    carData.path = [];
-                    carData.pathIndex = 0;
-                    carData.isWaiting = false;
-                    carData.waitTicks = 0;
-                    carData.blockedBy = null;
-                    carData.waitReason = null;
-                    this.releasePathReservation(carData.id);
+            if (occupier && occupier !== carData.id) {
+                const occupierCar = this.getCarById(occupier);
+                const shouldYield = this.shouldCurrentCarYield(carData, occupierCar);
+                const myPriority = this.getCarPriority(carData.id);
+                const theirPriority = this.getCarPriority(occupier);
+
+                if (!shouldYield && occupierCar && occupierCar.path.length === 0 && !occupierCar.hasCargoTask) {
+                    console.log(`🚦 ${carData.name} 優先級較高，請求 ${occupierCar.name} 讓路`);
+                    this.moveCarToSafePosition(occupierCar);
                     break;
                 }
 
-                // ⭐ 完整模式：碰撞檢測 + 優先級 + 重新規劃
-                const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
-                const occupier = nextCells
-                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id, false))
-                    .find(Boolean);
-
-                if (occupier && occupier !== carData.id) {
-                    const occupierCar = this.getCarById(occupier);
-                    const shouldYield = this.shouldCurrentCarYield(carData, occupierCar);
+                if (mode === 'advanced') {
                     const isOccupierIdle = occupierCar && occupierCar.path.length === 0;
                     const isBlockingTarget =
                         occupierCar &&
@@ -1203,41 +1086,35 @@ export class CarManager {
                         occupierCar &&
                         occupierCar.path.length > 0 &&
                         occupierCar.blockedBy === carData.id;
-
                     if (isMutualBlocking && shouldYield) {
                         console.log(`🔄 ${carData.name} 與 ${occupierCar.name} 準備相撞，${carData.name} 主動讓位`);
                         this.moveCarToSafePosition(carData);
                         break;
                     }
-                    
-                    // 比較優先級
-                    const myPriority = this.getCarPriority(carData.id);
-                    const theirPriority = this.getCarPriority(occupier);
+                }
 
-                    if (!carData.isWaiting) {
-                        carData.isWaiting = true;
-                        carData.waitStartTime = Date.now();
-                        carData.waitTicks = 1;
-                        carData.blockedBy = occupier;
-                        carData.waitReason = `被 ${occupierCar?.name || occupier} 阻擋`;
-                        console.log(`🚗 ${carData.name} (優先級${myPriority}) 等待 ${occupierCar?.name || occupier} (優先級${theirPriority}) 離開`);
-                    } else {
-                        carData.waitTicks += 1;
-                    }
+                if (!carData.isWaiting) {
+                    carData.isWaiting = true;
+                    carData.waitStartTime = Date.now();
+                    carData.waitTicks = 1;
+                    carData.blockedBy = occupier;
+                    carData.waitReason = `被 ${occupierCar?.name || occupier} 阻擋`;
+                    console.log(`🚗 ${carData.name} (優先級${myPriority}) 等待 ${occupierCar?.name || occupier} (優先級${theirPriority}) 離開`);
+                } else {
+                    carData.waitTicks += 1;
+                }
 
-                    // 等待超時處理
+                if (mode === 'advanced') {
                     const waitTime = Date.now() - carData.waitStartTime;
                     const occupierMovingSoon =
                         occupierCar &&
                         occupierCar.path.length > 0 &&
                         occupierCar.pathIndex < occupierCar.path.length - 1;
 
-                    // 若對方看起來很快會動，短暫等待即可
                     if (waitTime <= this.shortWaitTime && occupierMovingSoon) {
                         break;
                     }
 
-                    // 等待超過短暫門檻後，優先嘗試繞路
                     if (waitTime > this.shortWaitTime && carData.targetCoord) {
                         console.log(`↪️ ${carData.name} 路線受阻，嘗試繞路...`);
                         const detourPath = this.findGridPathAStar(carData.currentCoord, carData.targetCoord, carData.id);
@@ -1259,12 +1136,10 @@ export class CarManager {
                     }
 
                     if (waitTime > this.maxWaitTime) {
-                        // 如果我優先級更高，嘗試讓對方讓路
                         if (!shouldYield && occupierCar && !occupierCar.hasCargoTask) {
                             console.log(`⚠️ ${carData.name} 等待超時且優先級更高，請求 ${occupierCar.name} 讓路`);
                             this.moveCarToSafePosition(occupierCar);
                         } else if (carData.targetCoord) {
-                            // 否則自己重新規劃路徑
                             console.log(`⚠️ ${carData.name} 等待超時，重新規劃路徑...`);
                             const newPath = this.findGridPathAStar(carData.currentCoord, carData.targetCoord, carData.id);
                             if (newPath && newPath.length > 1) {
@@ -1280,69 +1155,74 @@ export class CarManager {
                                 carData.blockedBy = null;
                                 this.reservePathGrids(carData.id, newPath);
                             } else {
-                                // 重新規劃失敗，延長等待時間
                                 carData.waitStartTime = Date.now();
                             }
                         }
                     }
-                    break;
                 }
-
-                // 恢復非等待狀態
-                if (carData.isWaiting) {
-                    carData.isWaiting = false;
-                    carData.waitTicks = 0;
-                    carData.blockedBy = null;
-                    carData.waitReason = null;
-                    console.log(`✅ ${carData.name} 繼續移動`);
-                }
-
-                const direction = new THREE.Vector3()
-                    .subVectors(targetPoint.position, currentPos);
-                const distanceToTarget = direction.length();
-
-                if (distanceToTarget <= remainingDistance) {
-                    model.position.copy(targetPoint.position);
-                    carData.currentCoord = { ...targetPoint.coord };
-                    remainingDistance -= distanceToTarget;
-
-                    if (carData.pathIndex < path.length - 1) {
-                        carData.pathIndex += 1;
-                    } else {
-                        remainingDistance = 0;
-                    }
-                } else {
-                    direction.normalize();
-                    model.position.addScaledVector(direction, remainingDistance);
-                    remainingDistance = 0;
-                }
+                break;
             }
 
-            const reachedEnd = path.length > 0 &&
-                carData.pathIndex === path.length - 1 &&
-                model.position.distanceTo(path[path.length - 1].position) < 0.001;
-
-            if (reachedEnd) {
-                carData.path = [];
-                carData.pathIndex = 0;
-                carData.targetCoord = null;
-                carData.heading = this.unloadFacingDirection.clone();
+            if (carData.isWaiting) {
                 carData.isWaiting = false;
                 carData.waitTicks = 0;
                 carData.blockedBy = null;
                 carData.waitReason = null;
-
-                // 釋放路徑預約
-                this.releasePathReservation(carData.id);
-                
-                console.log(`🎯 ${carData.name} 已到達目的地`);
-
-                // 檢查是否是協作任務
-                if (carData.collaborativeTaskId) {
-                    this.checkCollaborativeTaskProgress(carData.collaborativeTaskId);
-                }
+                console.log(`✅ ${carData.name} 繼續移動`);
             }
-        });
+
+            const direction = new THREE.Vector3().subVectors(targetPoint.position, currentPos);
+            const distanceToTarget = direction.length();
+            if (distanceToTarget <= remainingDistance) {
+                model.position.copy(targetPoint.position);
+                carData.currentCoord = { ...targetPoint.coord };
+                remainingDistance -= distanceToTarget;
+                if (carData.pathIndex < path.length - 1) {
+                    carData.pathIndex += 1;
+                } else {
+                    remainingDistance = 0;
+                }
+            } else {
+                direction.normalize();
+                model.position.addScaledVector(direction, remainingDistance);
+                remainingDistance = 0;
+            }
+        }
+
+        const reachedEnd = path.length > 0 &&
+            carData.pathIndex === path.length - 1 &&
+            model.position.distanceTo(path[path.length - 1].position) < 0.001;
+        if (reachedEnd) {
+            carData.path = [];
+            carData.pathIndex = 0;
+            carData.targetCoord = null;
+            carData.heading = this.unloadFacingDirection.clone();
+            carData.isWaiting = false;
+            carData.waitTicks = 0;
+            carData.blockedBy = null;
+            carData.waitReason = null;
+            this.releasePathReservation(carData.id);
+            console.log(`🎯 ${carData.name} 已到達目的地`);
+            if (mode === 'advanced' && carData.collaborativeTaskId) {
+                this.checkCollaborativeTaskProgress(carData.collaborativeTaskId);
+            }
+        }
+    }
+
+    /**
+     * ⭐ 簡單避讓模式更新
+     */
+    updateSimpleMode(delta) {
+        this.cars.forEach((carData) => this.processCarMovement(carData, delta, 'simple'));
+    }
+
+    /**
+     * ⭐ 完整避障模式更新
+     */
+    updateAdvancedMode(delta) {
+        // 定期檢測死鎖
+        this.detectAndResolveDeadlock();
+        this.cars.forEach((carData) => this.processCarMovement(carData, delta, 'advanced'));
     }
 
     /**
