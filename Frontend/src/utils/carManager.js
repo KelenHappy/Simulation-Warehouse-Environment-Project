@@ -232,11 +232,14 @@ export class CarManager {
         return [anchorCoord, bodyCoord];
     }
 
-    getOccupierCarIdAtCoord(coord, activeCarId) {
+    getOccupierCarIdAtCoord(coord, activeCarId, includeReservations = true) {
         const key = `${coord.x}-${coord.z}`;
         const occupier = this.occupiedGrids.get(key);
         if (occupier && occupier !== activeCarId) {
             return occupier;
+        }
+        if (!includeReservations) {
+            return null;
         }
         const reserver = this.gridReservations.get(key);
         if (reserver && reserver !== activeCarId) {
@@ -1034,7 +1037,7 @@ export class CarManager {
                 // ⭐ 簡單模式：只檢查碰撞，不重新規劃（車輛占 2 格）
                 const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
                 const occupier = nextCells
-                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id))
+                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id, false))
                     .find(Boolean);
 
                 if (occupier && occupier !== carData.id) {
@@ -1124,7 +1127,7 @@ export class CarManager {
                 // ⭐ 完整模式：碰撞檢測 + 優先級 + 重新規劃
                 const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
                 const occupier = nextCells
-                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id))
+                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id, false))
                     .find(Boolean);
 
                 if (occupier && occupier !== carData.id) {
