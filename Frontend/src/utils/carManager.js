@@ -1038,6 +1038,21 @@ export class CarManager {
             while (remainingDistance > 0 && path.length > 0) {
                 const currentPos = model.position;
                 const targetPoint = path[carData.pathIndex];
+                if (!targetPoint?.coord || !targetPoint?.position) {
+                    console.error(`❌ ${carData.name} 路徑資料異常，可能在碰撞讓路時產生無效節點`, {
+                        pathIndex: carData.pathIndex,
+                        pathLength: path.length,
+                        targetPoint,
+                    });
+                    carData.path = [];
+                    carData.pathIndex = 0;
+                    carData.isWaiting = false;
+                    carData.waitTicks = 0;
+                    carData.blockedBy = null;
+                    carData.waitReason = null;
+                    this.releasePathReservation(carData.id);
+                    break;
+                }
 
                 // ⭐ 簡單模式：只檢查碰撞，不重新規劃（車輛占 2 格）
                 const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
@@ -1134,6 +1149,21 @@ export class CarManager {
             while (remainingDistance > 0 && path.length > 0) {
                 const currentPos = model.position;
                 const targetPoint = path[carData.pathIndex];
+                if (!targetPoint?.coord || !targetPoint?.position) {
+                    console.error(`❌ ${carData.name} 路徑資料異常，可能在碰撞讓路時產生無效節點`, {
+                        pathIndex: carData.pathIndex,
+                        pathLength: path.length,
+                        targetPoint,
+                    });
+                    carData.path = [];
+                    carData.pathIndex = 0;
+                    carData.isWaiting = false;
+                    carData.waitTicks = 0;
+                    carData.blockedBy = null;
+                    carData.waitReason = null;
+                    this.releasePathReservation(carData.id);
+                    break;
+                }
 
                 // ⭐ 完整模式：碰撞檢測 + 優先級 + 重新規劃
                 const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
