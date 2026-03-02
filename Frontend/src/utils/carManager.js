@@ -245,6 +245,19 @@ export class CarManager {
         return null;
     }
 
+    shouldCurrentCarYield(myCar, occupierCar) {
+        if (!myCar || !occupierCar) return false;
+
+        const myPriority = this.carPriorities.get(myCar.id) || 0;
+        const theirPriority = this.carPriorities.get(occupierCar.id) || 0;
+
+        if (myPriority !== theirPriority) {
+            return myPriority < theirPriority;
+        }
+
+        return myCar.id > occupierCar.id;
+    }
+
     getShelfWorldPosition({ x, y, z }) {
         if (!this.gridMetrics) return new THREE.Vector3();
         const xPos = this.gridMetrics.startX + x * (this.gridMetrics.boxWidth + this.gridMetrics.spacingX) - this.gridMetrics.modelCenter.x;
@@ -1125,6 +1138,17 @@ export class CarManager {
                     if (isOccupierIdle && isBlockingTarget && !occupierCar.hasCargoTask) {
                         console.log(`↔️ ${carData.name} 目標被 ${occupierCar.name} 卡住且對方未運行，請求讓位`);
                         this.moveCarToSafePosition(occupierCar);
+                        break;
+                    }
+
+                    const isMutualBlocking =
+                        occupierCar &&
+                        occupierCar.path.length > 0 &&
+                        occupierCar.blockedBy === carData.id;
+
+                    if (isMutualBlocking && this.shouldCurrentCarYield(carData, occupierCar)) {
+                        console.log(`🔄 ${carData.name} 與 ${occupierCar.name} 準備相撞，${carData.name} 主動讓位`);
+                        this.moveCarToSafePosition(carData);
                         break;
                     }
                     
