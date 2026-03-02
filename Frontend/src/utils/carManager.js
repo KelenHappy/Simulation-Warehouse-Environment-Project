@@ -71,14 +71,14 @@ export class CarManager {
                 pathType: "horizontal",
                 startOffset: 0,
                 startCoord: { x: 0, z: 0 },
-                priority: 1 // 優先級
+                priority: 10 // 優先級（高）
             },
             {
                 name: "車輛2",
                 pathType: "vertical",
                 startOffset: 0.25,
                 startCoord: { x: gridMetrics.width - 1, z: 0 },
-                priority: 2
+                priority: 1 // 優先級（低）
             }
         ];
 
@@ -261,6 +261,10 @@ export class CarManager {
         }
 
         return myCar.id > occupierCar.id;
+    }
+
+    getCarPriority(carId) {
+        return this.carPriorities.get(carId) || 0;
     }
 
     getShelfWorldPosition({ x, y, z }) {
@@ -1061,6 +1065,15 @@ export class CarManager {
                     .find(Boolean);
 
                 if (occupier && occupier !== carData.id) {
+                    const occupierCar = this.getCarById(occupier);
+                    const shouldYield = this.shouldCurrentCarYield(carData, occupierCar);
+
+                    if (!shouldYield && occupierCar && occupierCar.path.length === 0 && !occupierCar.hasCargoTask) {
+                        console.log(`🚦 ${carData.name} 優先級較高，請求 ${occupierCar.name} 讓路`);
+                        this.moveCarToSafePosition(occupierCar);
+                        break;
+                    }
+
                     if (!carData.isWaiting) {
                         carData.isWaiting = true;
                         carData.waitStartTime = Date.now();
@@ -1173,6 +1186,7 @@ export class CarManager {
 
                 if (occupier && occupier !== carData.id) {
                     const occupierCar = this.getCarById(occupier);
+                    const shouldYield = this.shouldCurrentCarYield(carData, occupierCar);
                     const isOccupierIdle = occupierCar && occupierCar.path.length === 0;
                     const isBlockingTarget =
                         occupierCar &&
@@ -1190,15 +1204,15 @@ export class CarManager {
                         occupierCar.path.length > 0 &&
                         occupierCar.blockedBy === carData.id;
 
-                    if (isMutualBlocking && this.shouldCurrentCarYield(carData, occupierCar)) {
+                    if (isMutualBlocking && shouldYield) {
                         console.log(`🔄 ${carData.name} 與 ${occupierCar.name} 準備相撞，${carData.name} 主動讓位`);
                         this.moveCarToSafePosition(carData);
                         break;
                     }
                     
                     // 比較優先級
-                    const myPriority = this.carPriorities.get(carData.id) || 0;
-                    const theirPriority = this.carPriorities.get(occupier) || 0;
+                    const myPriority = this.getCarPriority(carData.id);
+                    const theirPriority = this.getCarPriority(occupier);
 
                     if (!carData.isWaiting) {
                         carData.isWaiting = true;
@@ -1246,7 +1260,7 @@ export class CarManager {
 
                     if (waitTime > this.maxWaitTime) {
                         // 如果我優先級更高，嘗試讓對方讓路
-                        if (myPriority > theirPriority && occupierCar && !occupierCar.hasCargoTask) {
+                        if (!shouldYield && occupierCar && !occupierCar.hasCargoTask) {
                             console.log(`⚠️ ${carData.name} 等待超時且優先級更高，請求 ${occupierCar.name} 讓路`);
                             this.moveCarToSafePosition(occupierCar);
                         } else if (carData.targetCoord) {
