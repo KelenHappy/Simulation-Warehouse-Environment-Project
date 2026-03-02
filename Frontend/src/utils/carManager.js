@@ -36,6 +36,7 @@ export class CarManager {
         this.waitingCars = new Set(); // 正在等待的車輛
         this.deadlockCheckInterval = 3000; // 死鎖檢查間隔（毫秒）
         this.lastDeadlockCheck = 0;
+        this.shortWaitTime = 1200; // 短暫等待時間（毫秒）
         this.maxWaitTime = 5000; // 最大等待時間（毫秒）
         
         // ⭐ 協作任務系統
@@ -148,6 +149,7 @@ export class CarManager {
                             // 避障相關屬性
                             isWaiting: false,
                             waitStartTime: 0,
+                            waitTicks: 0,
                             waitReason: null,
                             blockedBy: null, // 被哪台車擋住
                             priority: config.priority || 0,
@@ -744,6 +746,7 @@ export class CarManager {
                         }));
                         car.pathIndex = 0;
                         car.isWaiting = false;
+                        car.waitTicks = 0;
                         car.blockedBy = null;
                         car.targetCoord = null; // 取消原目標
                         this.reservePathGrids(car.id, path);
@@ -758,6 +761,7 @@ export class CarManager {
         car.path = [];
         car.pathIndex = 0;
         car.isWaiting = false;
+        car.waitTicks = 0;
         car.blockedBy = null;
         car.targetCoord = null;
         this.releasePathReservation(car.id);
@@ -1022,6 +1026,7 @@ export class CarManager {
 
             if (path.length === 0) {
                 carData.isWaiting = false;
+                carData.waitTicks = 0;
                 carData.blockedBy = null;
                 return;
             }
@@ -1044,7 +1049,10 @@ export class CarManager {
                     if (!carData.isWaiting) {
                         carData.isWaiting = true;
                         carData.waitStartTime = Date.now();
+                        carData.waitTicks = 1;
                         console.log(`🚗 ${carData.name} 等待中... (簡單模式)`);
+                    } else {
+                        carData.waitTicks += 1;
                     }
                     break; // 停止移動，等待
                 }
@@ -1052,6 +1060,7 @@ export class CarManager {
                 // 恢復移動
                 if (carData.isWaiting) {
                     carData.isWaiting = false;
+                    carData.waitTicks = 0;
                     console.log(`✅ ${carData.name} 繼續移動`);
                 }
 
@@ -1086,6 +1095,7 @@ export class CarManager {
                 carData.targetCoord = null;
                 carData.heading = this.unloadFacingDirection.clone();
                 carData.isWaiting = false;
+                carData.waitTicks = 0;
                 carData.blockedBy = null;
                 carData.waitReason = null;
 
@@ -1112,6 +1122,7 @@ export class CarManager {
 
             if (path.length === 0) {
                 carData.isWaiting = false;
+                carData.waitTicks = 0;
                 carData.blockedBy = null;
                 return;
             }
@@ -1162,13 +1173,47 @@ export class CarManager {
                     if (!carData.isWaiting) {
                         carData.isWaiting = true;
                         carData.waitStartTime = Date.now();
+                        carData.waitTicks = 1;
                         carData.blockedBy = occupier;
                         carData.waitReason = `被 ${occupierCar?.name || occupier} 阻擋`;
                         console.log(`🚗 ${carData.name} (優先級${myPriority}) 等待 ${occupierCar?.name || occupier} (優先級${theirPriority}) 離開`);
+                    } else {
+                        carData.waitTicks += 1;
                     }
 
                     // 等待超時處理
                     const waitTime = Date.now() - carData.waitStartTime;
+                    const occupierMovingSoon =
+                        occupierCar &&
+                        occupierCar.path.length > 0 &&
+                        occupierCar.pathIndex < occupierCar.path.length - 1;
+
+                    // 若對方看起來很快會動，短暫等待即可
+                    if (waitTime <= this.shortWaitTime && occupierMovingSoon) {
+                        break;
+                    }
+
+                    // 等待超過短暫門檻後，優先嘗試繞路
+                    if (waitTime > this.shortWaitTime && carData.targetCoord) {
+                        console.log(`↪️ ${carData.name} 路線受阻，嘗試繞路...`);
+                        const detourPath = this.findGridPathAStar(carData.currentCoord, carData.targetCoord, carData.id);
+                        if (detourPath && detourPath.length > 1) {
+                            const carHeading = carData.heading?.clone() || this.unloadFacingDirection.clone();
+                            carData.path = detourPath.map((coord) => ({
+                                coord,
+                                direction: carHeading.clone(),
+                                position: this.getCargoAlignedPosition(coord, carHeading),
+                            }));
+                            carData.pathIndex = 0;
+                            carData.isWaiting = false;
+                            carData.waitTicks = 0;
+                            carData.blockedBy = null;
+                            carData.waitReason = null;
+                            this.reservePathGrids(carData.id, detourPath);
+                            continue;
+                        }
+                    }
+
                     if (waitTime > this.maxWaitTime) {
                         // 如果我優先級更高，嘗試讓對方讓路
                         if (myPriority > theirPriority && occupierCar && !occupierCar.hasCargoTask) {
@@ -1187,6 +1232,7 @@ export class CarManager {
                                 }));
                                 carData.pathIndex = 0;
                                 carData.isWaiting = false;
+                                carData.waitTicks = 0;
                                 carData.blockedBy = null;
                                 this.reservePathGrids(carData.id, newPath);
                             } else {
@@ -1201,6 +1247,7 @@ export class CarManager {
                 // 恢復非等待狀態
                 if (carData.isWaiting) {
                     carData.isWaiting = false;
+                    carData.waitTicks = 0;
                     carData.blockedBy = null;
                     carData.waitReason = null;
                     console.log(`✅ ${carData.name} 繼續移動`);
@@ -1237,6 +1284,7 @@ export class CarManager {
                 carData.targetCoord = null;
                 carData.heading = this.unloadFacingDirection.clone();
                 carData.isWaiting = false;
+                carData.waitTicks = 0;
                 carData.blockedBy = null;
                 carData.waitReason = null;
 
