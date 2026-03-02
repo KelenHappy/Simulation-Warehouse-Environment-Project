@@ -145,9 +145,33 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
     const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const pickDropDelay = 650;
 
-    async function moveCargoBoxToCoord(carId, cargoBox, targetCoord) {
+    async function dropCargoWithFallback(carId, primaryCoord, itemAssignments, deliveredItemIds) {
+        const dropped = dropCargo(carId);
+        await pause(pickDropDelay);
+        if (dropped) return true;
+
+        const fallbackCoords = getStagingCoordsByPriority(primaryCoord, carId, itemAssignments, deliveredItemIds);
+        for (const coord of fallbackCoords) {
+            const moved = setCarDestination(carId, `${coord.x}-${coord.z}`);
+            if (!moved) continue;
+
+            await waitForCarReady(carId);
+            await pause(pickDropDelay);
+
+            const retryDrop = dropCargo(carId);
+            await pause(pickDropDelay);
+            if (retryDrop) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    async function moveCargoBoxToCoord(carId, cargoBox, targetCoord, options = {}) {
         if (!carManager || !cargoBox?.userData?.gridCoord) return false;
 
+        const { itemAssignments, deliveredItemIds } = options;
         const { x, z } = cargoBox.userData.gridCoord;
         const moveResult = setCarDestination(carId, `${x}-${z}`);
         if (!moveResult) return false;
@@ -160,20 +184,19 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
 
         await pause(pickDropDelay);
 
-        setCarDestination(carId, `${targetCoord.x}-${targetCoord.z}`);
+        const moveToTarget = setCarDestination(carId, `${targetCoord.x}-${targetCoord.z}`);
+        if (!moveToTarget) return false;
+
         await waitForCarReady(carId);
         await pause(pickDropDelay);
 
-        const dropResult = dropCargo(carId);
-        await pause(pickDropDelay);
-
-        return dropResult;
+        return dropCargoWithFallback(carId, targetCoord, itemAssignments, deliveredItemIds);
     }
 
-    async function moveCargoBoxToCoords(carId, cargoBox, targetCoords = []) {
+    async function moveCargoBoxToCoords(carId, cargoBox, targetCoords = [], options = {}) {
         const coords = targetCoords.filter(Boolean);
         for (const coord of coords) {
-            const moved = await moveCargoBoxToCoord(carId, cargoBox, coord);
+            const moved = await moveCargoBoxToCoord(carId, cargoBox, coord, options);
             if (moved) {
                 return true;
             }
@@ -192,44 +215,112 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
         });
     }
 
-    function getNearbyStagingCoords(centerCoord) {
-        if (!gridMetricsCache) return [];
-        const { width, depth } = gridMetricsCache;
-        const offsets = [
-            { x: 1, z: 0 },
-            { x: -1, z: 0 },
-            { x: 0, z: 1 },
-            { x: 0, z: -1 },
-            { x: 1, z: 1 },
-            { x: 1, z: -1 },
-            { x: -1, z: 1 },
-            { x: -1, z: -1 },
-        ];
-
-        return offsets
-            .map((offset) => ({
-                x: Math.max(0, Math.min(width - 1, centerCoord.x + offset.x)),
-                z: Math.max(0, Math.min(depth - 1, centerCoord.z + offset.z)),
-            }))
-            .filter((coord) => coord.x !== centerCoord.x || coord.z !== centerCoord.z);
+    function isUnloadAreaCoord(coord) {
+        return unloadAreaCells.has(`${coord.x}-${coord.z}`);
     }
 
-    function getNextAvailableStagingCoord(centerCoord) {
-        const stagingCoords = getNearbyStagingCoords(centerCoord);
-        if (!gridMetricsCache || stagingCoords.length === 0) {
-            return { x: centerCoord.x, z: centerCoord.z };
+    function isOtherCarPendingStackCoord(coord, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!itemAssignments || itemAssignments.size === 0) return false;
+
+        return boxes.some((box) => {
+            const boxId = box.userData?.boxId;
+            if (!boxId || deliveredItemIds?.has(boxId)) return false;
+
+            const assignment = itemAssignments.get(boxId);
+            if (!assignment || assignment.carId === activeCarId) return false;
+
+            const gridCoord = box.userData?.gridCoord;
+            if (!gridCoord || box.userData?.isPicked) return false;
+
+            return gridCoord.x === coord.x && gridCoord.z === coord.z;
+        });
+    }
+
+    function isValidStagingCoord(coord, centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!coord) return false;
+        if (coord.x === centerCoord.x && coord.z === centerCoord.z) return false;
+        if (isUnloadAreaCoord(coord)) return false;
+        if (isOtherCarPendingStackCoord(coord, activeCarId, itemAssignments, deliveredItemIds)) return false;
+        return true;
+    }
+
+    function getNearbyStagingCoords(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        return getStagingCoordsByRadius(centerCoord, 1, activeCarId, itemAssignments, deliveredItemIds);
+    }
+
+    function getStagingCoordsByRadius(centerCoord, radius, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!gridMetricsCache || radius < 1) return [];
+
+        const { width, depth } = gridMetricsCache;
+        const candidates = [];
+
+        for (let z = centerCoord.z - radius; z <= centerCoord.z + radius; z++) {
+            for (let x = centerCoord.x - radius; x <= centerCoord.x + radius; x++) {
+                if (x < 0 || x >= width || z < 0 || z >= depth) continue;
+                const distance = Math.max(Math.abs(x - centerCoord.x), Math.abs(z - centerCoord.z));
+                if (distance !== radius) continue;
+
+                const coord = { x, z };
+                if (isValidStagingCoord(coord, centerCoord, activeCarId, itemAssignments, deliveredItemIds)) {
+                    candidates.push(coord);
+                }
+            }
         }
 
-        let bestCoord = stagingCoords[0];
-        let bestHeight = Number.POSITIVE_INFINITY;
-        stagingCoords.forEach((coord) => {
-            const stackHeight = getStackAtCoord(coord).length;
-            if (stackHeight < bestHeight) {
-                bestHeight = stackHeight;
-                bestCoord = coord;
+        return candidates;
+    }
+
+    function getStagingCoordsWithinRadius(centerCoord, maxRadius, activeCarId, itemAssignments, deliveredItemIds) {
+        if (!gridMetricsCache || maxRadius < 1) return [];
+
+        const { width, depth } = gridMetricsCache;
+        const candidates = [];
+
+        for (let z = centerCoord.z - maxRadius; z <= centerCoord.z + maxRadius; z++) {
+            for (let x = centerCoord.x - maxRadius; x <= centerCoord.x + maxRadius; x++) {
+                if (x < 0 || x >= width || z < 0 || z >= depth) continue;
+
+                const distance = Math.max(Math.abs(x - centerCoord.x), Math.abs(z - centerCoord.z));
+                if (distance < 1 || distance > maxRadius) continue;
+
+                const coord = { x, z };
+                if (isValidStagingCoord(coord, centerCoord, activeCarId, itemAssignments, deliveredItemIds)) {
+                    candidates.push(coord);
+                }
             }
-        });
-        return bestCoord;
+        }
+
+        return candidates;
+    }
+
+    function isStagingCoordNotFull(coord) {
+        if (!gridMetricsCache) return false;
+        const stackHeight = getStackAtCoord(coord).length;
+        return stackHeight < gridMetricsCache.height + 1;
+    }
+
+    function sortStagingCoordsByHeight(coords = []) {
+        return [...coords].sort((a, b) => getStackAtCoord(a).length - getStackAtCoord(b).length);
+    }
+
+    function getStagingCoordsByPriority(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        const nearby8 = sortStagingCoordsByHeight(
+            getStagingCoordsByRadius(centerCoord, 1, activeCarId, itemAssignments, deliveredItemIds)
+                .filter(isStagingCoordNotFull)
+        );
+        if (nearby8.length > 0) {
+            return nearby8;
+        }
+
+        return sortStagingCoordsByHeight(
+            getStagingCoordsWithinRadius(centerCoord, 2, activeCarId, itemAssignments, deliveredItemIds)
+                .filter(isStagingCoordNotFull)
+        );
+    }
+
+    function getNextAvailableStagingCoord(centerCoord, activeCarId, itemAssignments, deliveredItemIds) {
+        const stagingCoords = getStagingCoordsByPriority(centerCoord, activeCarId, itemAssignments, deliveredItemIds);
+        return stagingCoords[0] || null;
     }
 
     async function clearBlockingCargo(carId, targetBox, orderItemIds, itemAssignments, deliveredItemIds) {
@@ -245,20 +336,23 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
                 const assignment = itemAssignments?.get(blockingId);
                 const shippingCoord = assignment?.shippingTarget?.coord;
                 if (shippingCoord) {
-                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord]);
+                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord], { itemAssignments, deliveredItemIds });
                     deliveredItemIds?.add(blockingId);
                 }
             } else if (itemAssignments?.has(blockingId)) {
                 const assignment = itemAssignments.get(blockingId);
                 const shippingCoord = assignment?.shippingTarget?.coord;
                 if (shippingCoord) {
-                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord]);
+                    await moveCargoBoxToCoords(carId, blockingBox, [shippingCoord], { itemAssignments, deliveredItemIds });
                     deliveredItemIds?.add(blockingId);
                 }
             } else {
-                const stagingCoord = getNextAvailableStagingCoord(targetCoord);
-                const stagingCoords = [stagingCoord, ...getNearbyStagingCoords(targetCoord)];
-                await moveCargoBoxToCoords(carId, blockingBox, stagingCoords);
+                const stagingCoord = getNextAvailableStagingCoord(targetCoord, carId, itemAssignments, deliveredItemIds);
+                const stagingCoords = [
+                    stagingCoord,
+                    ...getStagingCoordsByPriority(targetCoord, carId, itemAssignments, deliveredItemIds),
+                ].filter(Boolean);
+                await moveCargoBoxToCoords(carId, blockingBox, stagingCoords, { itemAssignments, deliveredItemIds });
             }
 
             stack = getStackAtCoord(targetCoord);
@@ -298,7 +392,7 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
             }
 
             await clearBlockingCargo(carId, cargoBox, orderItemIds, itemAssignments, deliveredItemIds);
-            const moveResult = await moveCargoBoxToCoords(carId, cargoBox, [shippingTarget.coord]);
+            const moveResult = await moveCargoBoxToCoords(carId, cargoBox, [shippingTarget.coord], { itemAssignments, deliveredItemIds });
             if (!moveResult) {
                 executionStatus.value = `商品 ${itemId} 卸貨失敗`;
                 continue;
@@ -345,6 +439,7 @@ export function useThreeScene({ container, moveSpeed, hoveredBoxInfo, tooltipPos
                 (task.items || []).forEach((itemId) => {
                     itemAssignments.set(itemId, {
                         orderId: task.order?.id,
+                        carId,
                         shippingTarget,
                     });
                 });
