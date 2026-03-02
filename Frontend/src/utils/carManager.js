@@ -215,6 +215,36 @@ export class CarManager {
         return this.gridToWorld(coord.x, coord.z).add(offset);
     }
 
+    getCarBodyCoord(coord, direction) {
+        const dir = direction?.clone?.() || this.unloadFacingDirection.clone();
+        const normalizedDir = dir.lengthSq() > 0 ? dir.normalize() : this.unloadFacingDirection.clone();
+        return {
+            x: coord.x - Math.round(normalizedDir.x),
+            z: coord.z - Math.round(normalizedDir.z),
+        };
+    }
+
+    getCarOccupiedCoords(car, anchorCoord = car?.currentCoord) {
+        if (!car || !anchorCoord) return [];
+
+        const heading = car.heading?.clone?.() || this.unloadFacingDirection.clone();
+        const bodyCoord = this.getCarBodyCoord(anchorCoord, heading);
+        return [anchorCoord, bodyCoord];
+    }
+
+    getOccupierCarIdAtCoord(coord, activeCarId) {
+        const key = `${coord.x}-${coord.z}`;
+        const occupier = this.occupiedGrids.get(key);
+        if (occupier && occupier !== activeCarId) {
+            return occupier;
+        }
+        const reserver = this.gridReservations.get(key);
+        if (reserver && reserver !== activeCarId) {
+            return reserver;
+        }
+        return null;
+    }
+
     getShelfWorldPosition({ x, y, z }) {
         if (!this.gridMetrics) return new THREE.Vector3();
         const xPos = this.gridMetrics.startX + x * (this.gridMetrics.boxWidth + this.gridMetrics.spacingX) - this.gridMetrics.modelCenter.x;
@@ -458,16 +488,8 @@ export class CarManager {
             return true;
         }
 
-        const key = `${x}-${z}`;
-        const occupier = this.occupiedGrids.get(key);
-        const reserver = this.gridReservations.get(key);
-
-        // 如果是自己占用或預約，不算被擋
-        if ((occupier && occupier !== carId) || (reserver && reserver !== carId)) {
-            return true;
-        }
-
-        return false;
+        const occupier = this.getOccupierCarIdAtCoord({ x, z }, carId);
+        return Boolean(occupier);
     }
 
     /**
@@ -533,9 +555,14 @@ export class CarManager {
 
                 if (closedSet.has(neighborKey)) continue;
 
-                // 檢查是否被阻擋（但允許目標點）
-                const isTarget = nx === targetCoord.x && nz === targetCoord.z;
-                if (!isTarget && this.isGridBlocked(nx, nz, carId)) {
+                // 檢查是否被阻擋（車輛占 2 格，允許前端目標點）
+                const heading = this.getCarById(carId)?.heading?.clone?.() || this.unloadFacingDirection.clone();
+                const candidateCoords = this.getCarOccupiedCoords({ heading }, { x: nx, z: nz });
+                const blocked = candidateCoords.some((coord) => {
+                    const isFrontTarget = coord.x === targetCoord.x && coord.z === targetCoord.z;
+                    return !isFrontTarget && this.isGridBlocked(coord.x, coord.z, carId);
+                });
+                if (blocked) {
                     continue;
                 }
 
@@ -675,8 +702,21 @@ export class CarManager {
         // 嘗試找一個空閒的格子
         for (let z = 0; z < this.gridMetrics.depth; z++) {
             for (let x = 0; x < this.gridMetrics.width; x++) {
-                const key = `${x}-${z}`;
-                if (!this.occupiedGrids.has(key) && !this.gridReservations.has(key)) {
+                const candidateCoords = this.getCarOccupiedCoords(car, { x, z });
+                const isFree = candidateCoords.every((coord) => {
+                    if (
+                        coord.x < 0 ||
+                        coord.x >= this.gridMetrics.width ||
+                        coord.z < 0 ||
+                        coord.z >= this.gridMetrics.depth
+                    ) {
+                        return false;
+                    }
+                    const key = `${coord.x}-${coord.z}`;
+                    return !this.occupiedGrids.has(key) && !this.gridReservations.has(key);
+                });
+
+                if (isFree) {
                     // 找到空閒格子，規劃路徑
                     const path = this.findGridPathAStar(car.currentCoord, { x, z }, car.id);
                     if (path && path.length > 0) {
@@ -929,11 +969,21 @@ export class CarManager {
     update(delta) {
         if (this.cars.length === 0) return;
 
-        // 更新當前占用的格子
+        // 更新當前占用的格子（車輛占 2 格：取貨格 + 車身格）
         this.occupiedGrids.clear();
         this.cars.forEach(carData => {
-            const key = `${carData.currentCoord.x}-${carData.currentCoord.z}`;
-            this.occupiedGrids.set(key, carData.id);
+            this.getCarOccupiedCoords(carData).forEach((coord) => {
+                if (
+                    coord.x < 0 ||
+                    coord.x >= this.gridMetrics.width ||
+                    coord.z < 0 ||
+                    coord.z >= this.gridMetrics.depth
+                ) {
+                    return;
+                }
+                const key = `${coord.x}-${coord.z}`;
+                this.occupiedGrids.set(key, carData.id);
+            });
         });
 
         // 根據模式選擇更新方法
@@ -968,9 +1018,11 @@ export class CarManager {
                 const currentPos = model.position;
                 const targetPoint = path[carData.pathIndex];
 
-                // ⭐ 簡單模式：只檢查碰撞，不重新規劃
-                const nextKey = `${targetPoint.coord.x}-${targetPoint.coord.z}`;
-                const occupier = this.occupiedGrids.get(nextKey);
+                // ⭐ 簡單模式：只檢查碰撞，不重新規劃（車輛占 2 格）
+                const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
+                const occupier = nextCells
+                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id))
+                    .find(Boolean);
 
                 if (occupier && occupier !== carData.id) {
                     if (!carData.isWaiting) {
@@ -1057,11 +1109,24 @@ export class CarManager {
                 const targetPoint = path[carData.pathIndex];
 
                 // ⭐ 完整模式：碰撞檢測 + 優先級 + 重新規劃
-                const nextKey = `${targetPoint.coord.x}-${targetPoint.coord.z}`;
-                const occupier = this.occupiedGrids.get(nextKey);
+                const nextCells = this.getCarOccupiedCoords(carData, targetPoint.coord);
+                const occupier = nextCells
+                    .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id))
+                    .find(Boolean);
 
                 if (occupier && occupier !== carData.id) {
                     const occupierCar = this.getCarById(occupier);
+                    const isOccupierIdle = occupierCar && occupierCar.path.length === 0;
+                    const isBlockingTarget =
+                        occupierCar &&
+                        occupierCar.currentCoord.x === targetPoint.coord.x &&
+                        occupierCar.currentCoord.z === targetPoint.coord.z;
+
+                    if (isOccupierIdle && isBlockingTarget && !occupierCar.hasCargoTask) {
+                        console.log(`↔️ ${carData.name} 目標被 ${occupierCar.name} 卡住且對方未運行，請求讓位`);
+                        this.moveCarToSafePosition(occupierCar);
+                        break;
+                    }
                     
                     // 比較優先級
                     const myPriority = this.carPriorities.get(carData.id) || 0;
@@ -1072,7 +1137,7 @@ export class CarManager {
                         carData.waitStartTime = Date.now();
                         carData.blockedBy = occupier;
                         carData.waitReason = `被 ${occupierCar?.name || occupier} 阻擋`;
-                        console.log(`🚗 ${carData.name} (優先級${myPriority}) 等待 ${occupierCar?.name || occupier} (優先級${theirPriority}) 離開 (${nextKey})`);
+                        console.log(`🚗 ${carData.name} (優先級${myPriority}) 等待 ${occupierCar?.name || occupier} (優先級${theirPriority}) 離開`);
                     }
 
                     // 等待超時處理
