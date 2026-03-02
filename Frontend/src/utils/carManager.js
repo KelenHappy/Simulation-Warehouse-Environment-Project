@@ -27,6 +27,7 @@ export class CarManager {
 
         // ⭐ 避障模式設定
         this.collisionMode = 'advanced'; // 'simple' | 'advanced'
+        this.enableCollisionAvoidance = false; // false = 車輛可穿透，不做碰撞強制阻擋
         
         // 避障系統
         this.occupiedGrids = new Map(); // 當前占用的格子 key -> carId
@@ -508,6 +509,10 @@ export class CarManager {
     isGridBlocked(x, z, carId) {
         if (x < 0 || x >= this.gridMetrics.width || z < 0 || z >= this.gridMetrics.depth) {
             return true;
+        }
+
+        if (!this.enableCollisionAvoidance) {
+            return false;
         }
 
         const occupier = this.getOccupierCarIdAtCoord({ x, z }, carId);
@@ -1057,7 +1062,7 @@ export class CarManager {
                 .map((coord) => this.getOccupierCarIdAtCoord(coord, carData.id, false))
                 .find(Boolean);
 
-            if (occupier && occupier !== carData.id) {
+            if (this.enableCollisionAvoidance && occupier && occupier !== carData.id) {
                 const occupierCar = this.getCarById(occupier);
                 const shouldYield = this.shouldCurrentCarYield(carData, occupierCar);
                 const myPriority = this.getCarPriority(carData.id);
